@@ -1,0 +1,20 @@
+# --- Personal data: never commit ---
+data/
+analysis/
+models/
+*.jsonl
+*.sqlite3
+*.sqlite3-journal
+*.partial
+*.report.json
+*-log.txt
+predictions.csv
+test_predictions.csv
+firmware/**/secrets.h
+
+# --- Build / environment ---
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+*.bak

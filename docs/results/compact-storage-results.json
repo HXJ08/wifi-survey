@@ -1,0 +1,14 @@
+{
+  "format": "WSL1 independent lossless frames with CRC32",
+  "synthetic_scans": 240,
+  "original_jsonl_bytes": 752159,
+  "compact_flash_bytes": 204180,
+  "reduction_percent": 72.85,
+  "capacity_multiplier": 3.68,
+  "exact_export_match": true,
+  "sha256": "f118e2cabba334858f59a894cc006d524081b43327ed983be38f38a990e21da1",
+  "mac_import_records": 242,
+  "duplicate_import_records": 242,
+  "native_codec": "1003 roundtrip cases plus frame-byte corruption/truncation and I/O recovery tests; AddressSanitizer and UndefinedBehaviorSanitizer enabled",
+  "hardware_tested": false
+}
