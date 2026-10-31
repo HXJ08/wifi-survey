@@ -247,4 +247,6 @@ Adjust the moving scan rate on the fly over serial without re-flashing:
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+Copyright © 2026 Jack Huang.
+
+wifi-survey is free software, licensed under the **GNU General Public License v3.0** — see [LICENSE](LICENSE). You may use, study, change and share it; if you distribute a modified version, you must release its source under the same license.
