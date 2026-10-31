@@ -32,8 +32,8 @@ GPS loss can also mean a tunnel, vehicle or bag, so `gps_lost` is treated as evi
 | `fingerprint.py` | Similarity / clustering analysis of scans |
 | `geolocate.py` | Train a router map from tagged scans, predict locations, export a C++ lookup header |
 | `tools/*.command` | Double-click helpers for macOS (check board, export data) |
-| `tests/` | Python tests, end-to-end simulator, native C++ codec test |
-| `docs/results/` | Results from **synthetic** test fixtures only |
+| `tests/` | Python tests and native C++ codec test |
+| `docs/results/` | Storage-compression results from a **synthetic** test fixture |
 
 ## Quick start
 
@@ -48,7 +48,7 @@ python3 -m venv .venv && .venv/bin/python -m pip install -r requirements.txt
 
 - Compiled successfully with Arduino-ESP32 3.3.12 for generic ESP32-S3, 4 MB flash, default partition, USB CDC enabled.
 - Firmware uses 913,045 bytes of program storage and 45,080 bytes of static RAM in that configuration. Dynamic scan/string allocations are additional.
-- 15 automated Python tests cover fragmented transfers, checksum failures, truncated transfers, protocol errors, record validation, duplicate imports, conflicting identities, torn records, and the complete simulated pause/sync/download/import/resume workflow.
+- Automated Python tests cover fragmented transfers, checksum failures, truncated transfers, protocol errors, record validation (including GPS entry/exit events), duplicate imports, conflicting identities and torn records.
 - The actual C++ storage codec/journal reader passed 1,003 roundtrip cases plus corruption, truncation, recovery and I/O-failure tests under AddressSanitizer and UndefinedBehaviorSanitizer. A 240-scan fixture exported byte-for-byte identically and imported successfully on the Mac.
 - Hardware verification on 2026-10-29: uploaded through Arduino IDE to an ESP32-D0WD-V3 (ESP32 Dev Module, 4 MB flash), verified upload hash, initialized storage with user approval, synchronized time, and exported a real scan containing 20 networks. Recording was left active. This is a classic ESP32, not an ESP32-S3. Long-duration operation, storage endurance and abrupt power-loss testing remain outstanding.
 
@@ -151,18 +151,11 @@ Sources used for API checks:
 - https://docs.espressif.com/projects/arduino-esp32/en/latest/api/wifi.html
 - https://github.com/espressif/arduino-esp32/blob/master/libraries/LittleFS/src/LittleFS.cpp
 
-## End-to-end Mac workflow simulation
-
-Run `.venv/bin/python tests/simulate.py` from this folder. It generates a deterministic two-hour synthetic survey and drives the production `survey.py` command-line workflow through a simulated serial device. It checks normal/incremental/repeated exports, corrupted and interrupted transfers with retries, a device reboot during export, full-storage status, paused-state preservation, and torn-record quarantine. It writes `simulation-results.json` (a copy is in `docs/results/`); synthetic raw files/databases are isolated in a temporary directory and removed afterward, never mixed into real training data.
-
-Nine scenarios passed. Two hours (240 scans, 15–35 synthetic APs per scan) produced 752,159 bytes. That is the uncompressed export size; the updated firmware stores the same fixture in 204,180 bytes. The Mac workflow simulation does not model compression; the separate native C++ storage test measures it. Measure actual usage and download regularly. The full-storage scenario simulates the device's refusal/status, not actual flash allocation. This simulator exercises the real Mac code but does not run the firmware or simulate RF behaviour, flash wear, or hardware power loss.
-
-
 ## Compact-storage update
 
 Keep `CompactLog.h`, `ExportState.h`, `NmeaGps.h` and `secrets.h` beside `WifiSurvey.ino` when opening/uploading the sketch. No new Arduino libraries are required. New logs use `/survey.wsl`; old `/survey.jsonl` logs are exported first and left untouched. Use the same flash size and partition scheme when upgrading, and export existing surveys before flashing. Do not enable erase-all-flash. A subsequent upload and live recording/export check succeeded on an ESP32-D0WD-V3 board. ESP32-S3 remains compile-tested only.
 
-The Mac downloader waits up to 120 seconds for the board to prepare a decoded export. Export size can exceed the compressed on-device size. Storage compression does not drop APs, change RSSI, alter SSIDs, or reduce scan frequency. GPS remains absent until receiver integration.
+The Mac downloader waits up to 120 seconds for the board to prepare a decoded export. Export size can exceed the compressed on-device size. Storage compression does not drop APs, change RSSI, alter SSIDs, or reduce scan frequency.
 
 Native storage tests (from this folder; a C++ compiler is required):
 
