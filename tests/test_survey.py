@@ -27,6 +27,14 @@ def transfer(data,crc=None,end=b'\nEND\n'):
     return b'BEGIN '+str(len(data)).encode()+b' '+f'{zlib.crc32(data) if crc is None else crc:08x}'.encode()+b'\n'+data+end
 
 class Tests(unittest.TestCase):
+    def test_gps_entry_exit_events(self):
+        base=dict(v=2,device='test',session='session',record_id=1)
+        fix=dict(lat=43.4712,lon=-80.5391,alt_m=343.0,hdop=1.4,sats=6,fix_ms=1000,age_ms=20000)
+        s.validate(dict(base,type='gps_lost',ms=21000,last_fix=fix))
+        s.validate(dict(base,type='gps_regained',ms=90000,fix=dict(fix,age_ms=0),lost_ms=21000))
+        with self.assertRaises(ValueError): s.validate(dict(base,type='gps_lost',ms=21000))
+        with self.assertRaises(ValueError): s.validate(dict(base,type='gps_regained',ms=-1,fix=fix))
+
     def test_fragmented_export(self):
         data=encoded(record());port=FakePort(b'boot chatter\n'+transfer(data))
         self.assertEqual(s.Board(port).dump(),data);self.assertEqual(port.sent,[b'dump\n'])

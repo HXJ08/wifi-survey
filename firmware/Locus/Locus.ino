@@ -6,6 +6,9 @@
 // Arduino IDE, GPS time anchors, GNSS receiver status on every scan, faster retry of failed scans.
 // New in 3.1: adaptive interval (30 s moving / 2 min when the strong networks stop changing) and
 // "clear <len> <crc>" so the Mac frees storage after a verified export (auto-clear).
+// New in 3.2: slower default intervals to save flash (60 s moving / 5 min still) and GPS
+// entry/exit events: losing a good fix (gps_lost) marks "went indoors near last_fix"; regaining
+// it (gps_regained) marks the exit. Both trigger an immediate doorway scan.
 #include <Arduino.h>
 #include <WiFi.h>
 #include <ArduinoOTA.h>
@@ -23,15 +26,15 @@
 #include "NmeaGps.h"
 #include "secrets.h"
 
-#define FW_VERSION "3.1"
+#define FW_VERSION "3.2"
 const char *HOSTNAME = "locus-survey";
 
 // Optional GPS (ATGM336H): module TX -> GPIO16, module RX -> GPIO17, 3V3, GND.
 HardwareSerial SerialGPS(2);
 NmeaGps gps;
 
-uint64_t intervalMs = 30000;                  // moving: scan every 30 s
-uint64_t stationaryIntervalMs = 120000;       // still: scan every 2 min
+uint64_t intervalMs = 60000;                  // moving: scan every 60 s (storage saver)
+uint64_t stationaryIntervalMs = 300000;       // still: scan every 5 min
 constexpr int STRONG_RSSI = -80;              // only strong APs decide "moving" (weak ones flicker)
 constexpr float SAME_PLACE_JACCARD = 0.6f;    // |A∩B|/|A∪B| at or above this = same place
 constexpr int STILL_SCANS = 3;                // consecutive same-place scans before slowing down
@@ -41,6 +44,7 @@ constexpr uint64_t WIFI_CONNECT_TIMEOUT_MS = 15000;
 constexpr uint64_t WIFI_RETRY_HOME_MS = 60000;      // home SSID seen in last scan
 constexpr uint64_t WIFI_RETRY_AWAY_MS = 600000;     // otherwise try every 10 min (SSID may be hidden)
 constexpr uint64_t GPS_ANCHOR_EVERY_MS = 1800000;   // GPS clock anchor at most every 30 min
+constexpr uint64_t GPS_LOST_MS = 20000;             // good fix gone this long => likely entered a building
 constexpr size_t RESERVE_BYTES = 32768;
 const char *LOG_PATH = "/survey.wsl";
 const char *LEGACY_PATH = "/survey.jsonl";
@@ -53,6 +57,8 @@ uint32_t scanId = 0, recordId = 0;
 volatile bool ntpEvent = false;
 std::vector<uint64_t> prevStrong;             // strong BSSIDs of last good scan (sorted)
 int stillCount = 0; bool stationary = false;
+bool gpsOutdoor = false, scanSoon = false;   // entry/exit state; scanSoon = scan at next chance
+uint64_t gpsLostAt = 0;
 
 uint64_t nowMs() { return esp_timer_get_time() / 1000ULL; }
 String number(uint64_t n) { char b[24]; snprintf(b, sizeof(b), "%llu", (unsigned long long)n); return String(b); }
@@ -250,6 +256,32 @@ void serviceClock() {
   }
 }
 
+// Last known position (even if stale) with its age, for entry/exit events.
+String lastFixJson(uint64_t now) {
+  char b[200];
+  snprintf(b, sizeof(b), "{\"lat\":%.7f,\"lon\":%.7f,\"alt_m\":%.1f,\"hdop\":%.2f,\"sats\":%d,\"fix_ms\":%llu,\"age_ms\":%llu}",
+           gps.lat, gps.lon, gps.alt_m, gps.hdop, gps.satellites, (unsigned long long)gps.lastFixMs,
+           (unsigned long long)(now - gps.lastFixMs));
+  return String(b);
+}
+
+// Inspired by how phone Wi-Fi positioning works indoors: GPS dies at the door, so the last good
+// fix is the best anchor for everything seen inside. Scans between gps_lost and gps_regained are
+// later joined to last_fix. Loss can also mean a tunnel, vehicle or bag: evidence, not certainty.
+void serviceGpsEvents() {
+  uint64_t now = nowMs();
+  if (!gpsOutdoor && gps.hasQualityFix(now)) {
+    gpsOutdoor = true; scanSoon = true;
+    if (mounted && !fault && !paused)
+      save(base("gps_regained") + ",\"ms\":" + number(now) + ",\"fix\":" + lastFixJson(now) +
+           (gpsLostAt ? String(",\"lost_ms\":") + number(gpsLostAt) : String("")) + "}");
+  } else if (gpsOutdoor && gps.lastFixMs && now - gps.lastFixMs >= GPS_LOST_MS) {
+    gpsOutdoor = false; scanSoon = true; gpsLostAt = now;
+    if (mounted && !fault && !paused)
+      save(base("gps_lost") + ",\"ms\":" + number(now) + ",\"last_fix\":" + lastFixJson(now) + "}");
+  }
+}
+
 void serviceScan() {
   uint64_t now = nowMs();
   if (scanning) {
@@ -293,8 +325,8 @@ void serviceScan() {
     if (home && !wifiUp && !wifiTrying && nextWifiTry > now + 5000) nextWifiTry = now + 1000;  // home appeared: connect soon
     return;
   }
-  if (mounted && !fault && !paused && !wifiTrying && now >= nextScan) {
-    scanStart = now; scanId++;
+  if (mounted && !fault && !paused && !wifiTrying && (now >= nextScan || scanSoon)) {
+    scanStart = now; scanId++; scanSoon = false;
     int result = WiFi.scanNetworks(true, true, true, 300);  // async, include hidden, passive, 300 ms/channel
     if (result == WIFI_SCAN_FAILED) {
       save(base("scan_error") + ",\"ms\":" + number(scanStart) + ",\"scan_id\":" + String(scanId) + "}");
@@ -331,6 +363,7 @@ void loop() {
   if (otaActive) { delay(1); return; }
   serviceWifi();
   serviceClock();
+  serviceGpsEvents();
   serviceScan();
   delay(5);
 }

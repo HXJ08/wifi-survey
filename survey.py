@@ -145,6 +145,12 @@ def validate(r):
     elif r["type"] == "clock_anchor":
         if type(r.get("ms")) is not int or r["ms"]<0 or type(r.get("utc_ms")) is not int:
             raise ValueError("Invalid clock anchor")
+    elif r["type"] in ("gps_lost","gps_regained"):
+        if type(r.get("ms")) is not int or r["ms"]<0:
+            raise ValueError("Invalid GPS event")
+        fix=r.get("last_fix" if r["type"]=="gps_lost" else "fix")
+        if not isinstance(fix,dict) or not all(isinstance(fix.get(k),(int,float)) for k in ("lat","lon","age_ms")):
+            raise ValueError("Invalid GPS event fix")
     elif r["type"] not in ("boot","scan_error"):
         raise ValueError("Unknown record type")
 

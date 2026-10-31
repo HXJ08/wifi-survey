@@ -6,6 +6,23 @@ Locus is an ESP32 survey rig + Mac toolkit that records Wi-Fi fingerprints (BSSI
 
 > **Privacy:** this repo contains code only. Survey data (`data/`, `analysis/`, `models/`) and `secrets.h` are git-ignored. Wi-Fi scans reveal nearby networks and where you have been — do not commit or share them.
 
+## How it works: inspired by the iPhone Wi-Fi Positioning System
+
+Locus is inspired by how iPhones (and other phones) find their location indoors, where GPS doesn't reach. Phones don't use GPS inside buildings either. They use a **Wi-Fi Positioning System (WPS)**:
+
+1. **Learn outside.** Wi-Fi leaks out of buildings. Whenever a phone has a GPS fix *and* sees access points at the same moment, it learns roughly where those access points are.
+2. **Look up inside.** Indoors, the phone sees nearby access points, looks up their learned positions and averages them, weighted by signal strength:
+
+   $$\vec{p}_{\text{you}} \approx \frac{\sum_i w_i\,\vec{p}_i}{\sum_i w_i}$$
+
+Apple builds its map from millions of phones. Locus builds a **personal, local version** from one survey rig:
+
+- **Outdoors:** each Wi-Fi scan is tagged with GPS, so edge access points get coordinates (`geolocate.py train`).
+- **The doorway is a checkpoint.** When a good GPS fix disappears for 20 s, the firmware logs `gps_lost` with the **last good position** and scans immediately. Everything seen afterwards is near that point until `gps_regained` marks the exit (also with an immediate scan).
+- **Indoors:** deeper access points are placed by being seen *together with* already-located ones, and Wi-Fi fingerprint clustering (`fingerprint.py`) recognises rooms and places, with no GPS needed.
+
+GPS loss can also mean a tunnel, vehicle or bag, so `gps_lost` is treated as evidence, not certainty. The Wi-Fi fingerprint right after it confirms whether a building was entered.
+
 ## Repo layout
 
 | Path | What it is |
@@ -208,9 +225,20 @@ The updated `Locus.ino` includes zero-dependency NMEA GPS parsing on `SerialGPS`
 
 GPS coordinates are automatically recorded in each scan only when a high-quality fix (`HDOP <= 2.5`) is active. When no GPS is connected, scans safely record `"gps": null`.
 
+Firmware 3.2 also logs building entry/exit events:
+
+| Record | When | Key fields |
+|---|---|---|
+| `gps_lost` | a good fix has been missing for 20 s | `ms`, `last_fix` (`lat`, `lon`, `alt_m`, `hdop`, `sats`, `fix_ms`, `age_ms`) |
+| `gps_regained` | a good fix returns | `ms`, `fix`, `lost_ms` (absent for the first fix after boot) |
+
+Both trigger an immediate Wi-Fi scan, capturing the doorway fingerprint. `survey.py` validates and imports both record types.
+
 ### 4. Dynamic Scan Interval
 
-Adjust the scan rate on the fly over serial without re-flashing:
+Defaults (firmware 3.2, chosen to save flash): **60 s while moving**, **5 min when stationary** (the strong networks stop changing for 3 scans). Entry/exit events add one immediate scan each.
+
+Adjust the moving scan rate on the fly over serial without re-flashing:
 
 ```sh
 .venv/bin/python survey.py interval 5000 --port /dev/cu.usbserial-0001   # 5s interval while walking
