@@ -1,21 +1,21 @@
-# Locus
+# wifi-survey
 
 **Find where you are using the Wi-Fi networks around you.**
 
-Locus is an ESP32 survey rig + Mac toolkit that records Wi-Fi fingerprints (BSSID, RSSI, channel, SSID) every few seconds, optionally tags them with GPS, and learns a router map so a board can estimate its location without GPS. Everything stays local: no server, cloud account or SD card.
+wifi-survey is an ESP32 survey rig + Mac toolkit that records Wi-Fi fingerprints (BSSID, RSSI, channel, SSID) every few seconds, optionally tags them with GPS, and learns a router map so a board can estimate its location without GPS. Everything stays local: no server, cloud account or SD card.
 
 > **Privacy:** this repo contains code only. Survey data (`data/`, `analysis/`, `models/`) and `secrets.h` are git-ignored. Wi-Fi scans reveal nearby networks and where you have been — do not commit or share them.
 
 ## How it works: inspired by the iPhone Wi-Fi Positioning System
 
-Locus is inspired by how iPhones (and other phones) find their location indoors, where GPS doesn't reach. Phones don't use GPS inside buildings either. They use a **Wi-Fi Positioning System (WPS)**:
+wifi-survey is inspired by how iPhones (and other phones) find their location indoors, where GPS doesn't reach. Phones don't use GPS inside buildings either. They use a **Wi-Fi Positioning System (WPS)**:
 
 1. **Learn outside.** Wi-Fi leaks out of buildings. Whenever a phone has a GPS fix *and* sees access points at the same moment, it learns roughly where those access points are.
 2. **Look up inside.** Indoors, the phone sees nearby access points, looks up their learned positions and averages them, weighted by signal strength:
 
    $$\vec{p}_{\text{you}} \approx \frac{\sum_i w_i\,\vec{p}_i}{\sum_i w_i}$$
 
-Apple builds its map from millions of phones. Locus builds a **personal, local version** from one survey rig:
+Apple builds its map from millions of phones. wifi-survey builds a **personal, local version** from one survey rig:
 
 - **Outdoors:** each Wi-Fi scan is tagged with GPS, so edge access points get coordinates (`geolocate.py train`).
 - **The doorway is a checkpoint.** When a good GPS fix disappears for 20 s, the firmware logs `gps_lost` with the **last good position** and scans immediately. Everything seen afterwards is near that point until `gps_regained` marks the exit (also with an immediate scan).
@@ -27,7 +27,7 @@ GPS loss can also mean a tunnel, vehicle or bag, so `gps_lost` is treated as evi
 
 | Path | What it is |
 |---|---|
-| `firmware/Locus/` | Arduino sketch for ESP32 / ESP32-S3 (compressed flash log, GPS, NTP, OTA) |
+| `firmware/WifiSurvey/` | Arduino sketch for ESP32 / ESP32-S3 (compressed flash log, GPS, NTP, OTA) |
 | `survey.py` | Mac CLI: initialize, start, status, collect (export + import to SQLite) |
 | `fingerprint.py` | Similarity / clustering analysis of scans |
 | `geolocate.py` | Train a router map from tagged scans, predict locations, export a C++ lookup header |
@@ -38,8 +38,8 @@ GPS loss can also mean a tunnel, vehicle or bag, so `gps_lost` is treated as evi
 ## Quick start
 
 ```sh
-git clone https://github.com/HXJ08/locus.git && cd locus
-cp firmware/Locus/secrets.example.h firmware/Locus/secrets.h   # then edit it
+git clone https://github.com/HXJ08/wifi-survey.git && cd wifi-survey
+cp firmware/WifiSurvey/secrets.example.h firmware/WifiSurvey/secrets.h   # then edit it
 python3 -m venv .venv && .venv/bin/python -m pip install -r requirements.txt
 .venv/bin/python -m unittest discover -s tests -v
 ```
@@ -54,7 +54,7 @@ python3 -m venv .venv && .venv/bin/python -m pip install -r requirements.txt
 
 ## 1. Upload firmware
 
-Copy `firmware/Locus/secrets.example.h` to `secrets.h` and fill in your values, then open `firmware/Locus/Locus.ino` in Arduino IDE with Espressif's Arduino-ESP32 3.x package. Select your exact board and its actual flash size. Select a partition scheme that includes a SPIFFS data partition: LittleFS uses that partition. A scheme without filesystem space will not work.
+Copy `firmware/WifiSurvey/secrets.example.h` to `secrets.h` and fill in your values, then open `firmware/WifiSurvey/WifiSurvey.ino` in Arduino IDE with Espressif's Arduino-ESP32 3.x package. Select your exact board and its actual flash size. Select a partition scheme that includes a SPIFFS data partition: LittleFS uses that partition. A scheme without filesystem space will not work.
 
 The generic 4 MB compile configuration is a compile test, not identification of your board. USB CDC settings depend on whether you use native USB or a USB-to-serial bridge. Do not erase flash or change partition layouts on a board containing unexported surveys. Close Serial Monitor before running the downloader.
 
@@ -63,7 +63,7 @@ The generic 4 MB compile configuration is a compile test, not identification of 
 In Terminal:
 
 ```sh
-cd locus
+cd wifi-survey
 python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
 .venv/bin/python survey.py ports
@@ -160,15 +160,15 @@ Nine scenarios passed. Two hours (240 scans, 15–35 synthetic APs per scan) pro
 
 ## Compact-storage update
 
-Keep `CompactLog.h`, `ExportState.h`, `NmeaGps.h` and `secrets.h` beside `Locus.ino` when opening/uploading the sketch. No new Arduino libraries are required. New logs use `/survey.wsl`; old `/survey.jsonl` logs are exported first and left untouched. Use the same flash size and partition scheme when upgrading, and export existing surveys before flashing. Do not enable erase-all-flash. A subsequent upload and live recording/export check succeeded on an ESP32-D0WD-V3 board. ESP32-S3 remains compile-tested only.
+Keep `CompactLog.h`, `ExportState.h`, `NmeaGps.h` and `secrets.h` beside `WifiSurvey.ino` when opening/uploading the sketch. No new Arduino libraries are required. New logs use `/survey.wsl`; old `/survey.jsonl` logs are exported first and left untouched. Use the same flash size and partition scheme when upgrading, and export existing surveys before flashing. Do not enable erase-all-flash. A subsequent upload and live recording/export check succeeded on an ESP32-D0WD-V3 board. ESP32-S3 remains compile-tested only.
 
 The Mac downloader waits up to 120 seconds for the board to prepare a decoded export. Export size can exceed the compressed on-device size. Storage compression does not drop APs, change RSSI, alter SSIDs, or reduce scan frequency. GPS remains absent until receiver integration.
 
 Native storage tests (from this folder; a C++ compiler is required):
 
 ```sh
-c++ -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined tests/compact_log_test.cpp -o /tmp/locus-codec-test
-/tmp/locus-codec-test
+c++ -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined tests/compact_log_test.cpp -o /tmp/wifi-survey-codec-test
+/tmp/wifi-survey-codec-test
 ```
 
 `docs/results/compact-storage-results.json` contains the measured fixture results. Host tests do not establish ESP32 timing, peak heap usage, real flash endurance, or physical power-loss guarantees.
@@ -217,7 +217,7 @@ Once you have GPS-tagged scans (or manually anchored places):
 
 ### 3. GPS Receiver Hardware Setup
 
-The updated `Locus.ino` includes zero-dependency NMEA GPS parsing on `SerialGPS` (UART2):
+The updated `WifiSurvey.ino` includes zero-dependency NMEA GPS parsing on `SerialGPS` (UART2):
 * **GPS TX** -> **ESP32 RX2 (GPIO 16)**
 * **GPS RX** -> **ESP32 TX2 (GPIO 17)**
 * **VCC** -> **3.3V / 5V** (depending on your module)

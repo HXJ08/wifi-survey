@@ -1,5 +1,5 @@
-// Locus Wi-Fi survey rig — firmware 3.0 (classic ESP32 or ESP32-S3, Arduino-ESP32 3.x)
-// Purpose (Locus): continuously log Wi-Fi fingerprints (BSSID, SSID, RSSI, channel) with
+// wifi-survey rig — firmware 3.0 (classic ESP32 or ESP32-S3, Arduino-ESP32 3.x)
+// Purpose (wifi-survey): continuously log Wi-Fi fingerprints (BSSID, SSID, RSSI, channel) with
 // trustworthy UTC time and, when a GPS is attached, coordinates + fix quality. Data stays on the
 // board until exported over USB (export-esp32.command / survey.py collect, protocol 2 unchanged).
 // New in 3.0: joins the home network for NTP time (anchors every session), OTA upload from
@@ -27,7 +27,7 @@
 #include "secrets.h"
 
 #define FW_VERSION "3.2"
-const char *HOSTNAME = "locus-survey";
+const char *HOSTNAME = "wifi-survey";
 
 // Optional GPS (ATGM336H): module TX -> GPIO16, module RX -> GPIO17, 3V3, GND.
 HardwareSerial SerialGPS(2);

@@ -94,7 +94,7 @@ def counts(directory):
 
 def run():
     results=[]
-    with tempfile.TemporaryDirectory(prefix='locus-simulation-') as tmp:
+    with tempfile.TemporaryDirectory(prefix='wifi-survey-simulation-') as tmp:
         root=Path(tmp);rig=Rig();rig.scans(240)
         # This is two hours of synthetic scans, generated instantly.
         original_scan_bytes=[s.canonical(r) for r in rig.records if r['type']=='scan']

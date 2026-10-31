@@ -1,4 +1,4 @@
-#include "../firmware/Locus/CompactLog.h"
+#include "../firmware/WifiSurvey/CompactLog.h"
 #include <cassert>
 #include <fstream>
 #include <iostream>
