@@ -29,7 +29,7 @@ def transfer(data,crc=None,end=b'\nEND\n'):
 class Tests(unittest.TestCase):
     def test_gps_entry_exit_events(self):
         base=dict(v=2,device='test',session='session',record_id=1)
-        fix=dict(lat=43.4712,lon=-80.5391,alt_m=343.0,hdop=1.4,sats=6,fix_ms=1000,age_ms=20000)
+        fix=dict(lat=45.0000,lon=-75.0000,alt_m=343.0,hdop=1.4,sats=6,fix_ms=1000,age_ms=20000)
         s.validate(dict(base,type='gps_lost',ms=21000,last_fix=fix))
         s.validate(dict(base,type='gps_regained',ms=90000,fix=dict(fix,age_ms=0),lost_ms=21000))
         with self.assertRaises(ValueError): s.validate(dict(base,type='gps_lost',ms=21000))

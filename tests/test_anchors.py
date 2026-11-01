@@ -11,7 +11,7 @@ spec = importlib.util.spec_from_file_location('anchors', ROOT / 'anchors.py')
 m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 
 T0 = 1_793_400_000_000  # arbitrary UTC ms
-BASE_LAT, BASE_LON = 43.4710, -80.5390
+BASE_LAT, BASE_LON = 45.0000, -75.0000
 
 
 def mac(place, i):
