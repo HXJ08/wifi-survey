@@ -12,6 +12,8 @@ import math
 from pathlib import Path
 import numpy as np
 
+import anchors as aps
+
 EARTH_RADIUS_METERS = 6371000.0
 
 
@@ -88,21 +90,24 @@ def load_scans(path, min_rssi=-82, filter_laa=True):
     return scans, anchors
 
 
-def train_router_map(scans, anchors=None, manual_tags=None):
+def train_router_map(scans, anchors=None, manual_tags=None, classes=None, doorway=None):
     """
     Learns physical (lat, lon) coordinates for every fixed Wi-Fi router
     using signal-weighted multilateration from GPS-tagged or anchored scans.
+
+    classes: output of anchors.classify(); mobile APs are skipped and moved APs only use
+             sightings after they moved. doorway: anchors.doorway_labels() weak labels.
     """
     manual_tags = manual_tags or {}
-    router_obs = {}  # bssid -> list of (lat, lon, rssi)
+    classes = classes or {}
+    doorway = doorway or {}
+    anchors = anchors or {}
+    router_obs = {}  # bssid -> list of (lat, lon, rssi, ssid_hex, label_weight)
 
-    for s in scans:
-        coords = None
-        # 1. Direct GPS fix recorded by ESP32
-        if s.get("gps") and isinstance(s["gps"], dict):
-            g = s["gps"]
-            if "lat" in g and "lon" in g and (g.get("hdop", 1.0) <= 2.5):
-                coords = (float(g["lat"]), float(g["lon"]))
+    for i, s in enumerate(scans):
+        coords, label_w = None, 1.0
+        # 1. Fresh, good GPS fix recorded by the ESP32 (stale indoor fixes are rejected)
+        coords = aps.fresh_gps(s)
 
         # 2. Manual session or scan anchor tag
         if coords is None:
@@ -112,21 +117,32 @@ def train_router_map(scans, anchors=None, manual_tags=None):
             elif "ALL" in manual_tags:
                 coords = manual_tags["ALL"]["coords"]
 
+        # 3. Weak label: pinned near the doorway where GPS was lost
+        if coords is None and i in doorway:
+            lat, lon, _radius, label_w = doorway[i]
+            coords = (lat, lon)
+
         if coords is None:
             continue
 
         lat, lon = coords
+        t = aps.scan_time(s, anchors)
         for ap in s.get("aps", []):
             bssid = ap["bssid"].upper()
+            info = classes.get(bssid, {})
+            if info.get("class") == "mobile":
+                continue
+            if info.get("class") == "moved" and (t is None or t < info["moved_at_utc_ms"]):
+                continue
             rssi = ap["rssi_dbm"]
-            router_obs.setdefault(bssid, []).append((lat, lon, rssi, ap.get("ssid_hex", "")))
+            router_obs.setdefault(bssid, []).append((lat, lon, rssi, ap.get("ssid_hex", ""), label_w))
 
     router_map = {}
     for bssid, obs in router_obs.items():
         if not obs:
             continue
         # Weight by signal power: w = 10^((RSSI + 100) / 20)
-        weights = [10.0 ** ((o[2] + 100.0) / 20.0) for o in obs]
+        weights = [o[4] * 10.0 ** ((o[2] + 100.0) / 20.0) for o in obs]
         total_w = sum(weights)
         if total_w <= 0:
             continue
@@ -136,7 +152,7 @@ def train_router_map(scans, anchors=None, manual_tags=None):
 
         # Spread / uncertainty estimate in meters
         distances = [haversine_meters(w_lat, w_lon, o[0], o[1]) for o in obs]
-        spread_m = float(np.mean(distances)) if distances else 15.0
+        spread_m = float(np.average(distances, weights=weights)) if distances else 15.0
 
         ssid = ""
         try:
@@ -149,8 +165,10 @@ def train_router_map(scans, anchors=None, manual_tags=None):
             "lon": round(w_lon, 7),
             "spread_meters": round(spread_m, 1),
             "observations": len(obs),
+            "gps_observations": sum(1 for o in obs if o[4] >= 1.0),
             "max_rssi": max(o[2] for o in obs),
-            "ssid": ssid
+            "ssid": ssid,
+            "class": classes.get(bssid, {}).get("class", "unclassified")
         }
 
     return router_map
@@ -240,6 +258,8 @@ def main():
     p_train.add_argument("--tag-session", action="append", nargs=2, metavar=("SESSION_ID", "LAT,LON[,NAME]"),
                          help="Tag a specific session with coordinates")
     p_train.add_argument("--export-cpp", action="store_true", help="Also export C++ header for on-device ESP32 inference")
+    p_train.add_argument("--keep-mobile", action="store_true", help="Do not drop mobile / moved-away access points")
+    p_train.add_argument("--no-doorway", action="store_true", help="Do not use doorway-pinned indoor scans as weak labels")
 
     # Predict command
     p_pred = subparsers.add_parser("predict", help="Predict coordinates for scans using trained models")
@@ -250,13 +270,12 @@ def main():
     args = parser.parse_args()
 
     if args.command == "train":
-        all_scans = []
-        for inp in args.inputs:
-            p = Path(inp)
-            files = list(p.glob("*.jsonl")) if p.is_dir() else [p]
-            for f in files:
-                scans, _ = load_scans(f)
-                all_scans.extend(scans)
+        # One de-duplicated record set across all inputs (exports overlap when the board isn't cleared)
+        raw_scans, clock, events = aps.split_records(aps.load_records(args.inputs))
+        classes = {} if args.keep_mobile else aps.classify(raw_scans, clock, events)
+        all_scans = [clean_scan(s) for s in raw_scans]
+        # Pin on the full scans: dropping weak networks first would make every scan look unlike the doorway
+        doorway = {} if args.no_doorway else aps.doorway_labels(raw_scans, events)
 
         manual_tags = {}
         if args.tag_all:
@@ -274,11 +293,17 @@ def main():
         out_dir = Path(args.out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
 
-        router_map = train_router_map(all_scans, manual_tags=manual_tags)
+        router_map = train_router_map(all_scans, anchors=clock, manual_tags=manual_tags,
+                                      classes=classes, doorway=doorway)
         map_path = out_dir / "router_map.json"
         map_path.write_text(json.dumps(router_map, indent=2))
+        if classes:
+            (out_dir / "ap_classes.json").write_text(json.dumps(classes, indent=2, sort_keys=True))
 
-        print(f"Loaded {len(all_scans)} scans across input files.")
+        print(f"Loaded {len(all_scans)} unique scans across input files.")
+        print(f"GPS-labelled scans: {sum(1 for s in all_scans if aps.fresh_gps(s))}; doorway-pinned scans: {len(doorway)}")
+        if classes:
+            print(f"Access points: {aps.summary(classes)} (mobile ones are excluded from the map)")
         print(f"Successfully mapped {len(router_map)} unique fixed routers.")
         print(f"Saved router map to: {map_path}")
 

@@ -30,6 +30,7 @@ GPS loss can also mean a tunnel, vehicle or bag, so `gps_lost` is treated as evi
 | `firmware/WifiSurvey/` | Arduino sketch for ESP32 / ESP32-S3 (compressed flash log, GPS, NTP, OTA) |
 | `survey.py` | Mac CLI: initialize, start, status, collect (export + import to SQLite) |
 | `fingerprint.py` | Similarity / clustering analysis of scans |
+| `anchors.py` | Classify access points (anchor / mobile / moved / unknown) and pin indoor scans to doorways |
 | `geolocate.py` | Train a router map from tagged scans, predict locations, export a C++ lookup header |
 | `tools/*.command` | Double-click helpers for macOS (check board, export data) |
 | `tests/` | Python tests and native C++ codec test |
@@ -208,7 +209,30 @@ Once you have GPS-tagged scans (or manually anchored places):
 * `models/router_map.json`: Mapped fixed routers with estimated coordinates and spread.
 * `models/router_map.h`: Embedded C++ header for calculating latitude/longitude directly on the ESP32 without a PC or GPS.
 
-### 3. GPS Receiver Hardware Setup
+### 3. Filtering moving devices (`anchors.py`)
+
+Like a phone's Wi-Fi Positioning System, the router map should only contain routers that stay put. `anchors.py` classifies every access point; `geolocate.py train` runs it automatically and leaves mobile ones out of the map (`--keep-mobile` disables this).
+
+```sh
+.venv/bin/python anchors.py data/raw --out analysis/ap-classes.json
+```
+
+| Class | Meaning | How it is detected |
+|---|---|---|
+| `anchor` | fixed router | consistent neighbours, or a constant nearby companion (e.g. a router you walk past) |
+| `mobile` | moves with people | hotspot-style name (iPhone, Galaxy, AndroidAP, MiFi…); heard **strongly** (≥ −80 dBm) from points > 200 m apart; neighbours keep changing **and** no neighbour is seen with it ≥ 50% of the time; or a randomized MAC seen fewer than 4 times |
+| `moved` | was fixed, then fixed somewhere else | its neighbours before and after one moment barely overlap while each side is consistent; only the newest location is used |
+| `unknown` | too few sightings to judge | kept in the map, flagged in its `class` field |
+
+Randomized MACs alone are **not** treated as mobile: printers (`DIRECT-…`), smart speakers and cameras use them but stay put. Faint far-away sightings are ignored for spread, because 2.4 GHz signals carry 300 m+ across open ground.
+
+**Doorway pinning.** Scans after `gps_lost` are pinned to `last_fix` (radius 40 m, weight 0.3 vs a real fix) while they still share ≥ 30% of their networks with the doorway scan; scans before `gps_regained` are pinned to the exit fix the same way. Lost→regained stretches under 60 s are building-edge flicker and ignored.
+
+**Also fixed in `geolocate.py`:** overlapping exports are de-duplicated (the same scan was counted once per export), stale GPS fixes (`age_ms` > 5 s) are never used as labels, and each router entry records its `class` and how many real GPS observations it has.
+
+All thresholds are constants at the top of `anchors.py`.
+
+### 4. GPS Receiver Hardware Setup
 
 The updated `WifiSurvey.ino` includes zero-dependency NMEA GPS parsing on `SerialGPS` (UART2):
 * **GPS TX** -> **ESP32 RX2 (GPIO 16)**
@@ -227,7 +251,7 @@ Firmware 3.2 also logs building entry/exit events:
 
 Both trigger an immediate Wi-Fi scan, capturing the doorway fingerprint. `survey.py` validates and imports both record types.
 
-### 4. Dynamic Scan Interval
+### 5. Dynamic Scan Interval
 
 Defaults (firmware 3.2, chosen to save flash): **60 s while moving**, **5 min when stationary** (the strong networks stop changing for 3 scans). Entry/exit events add one immediate scan each.
 

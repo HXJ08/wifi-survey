@@ -104,8 +104,13 @@ def predict(train,labels,queries,threshold=THRESHOLD,margin=0.08):
     return result
 
 
-def analyze(path,out,threshold=THRESHOLD,min_rssi=None,filter_laa=False,method='complete'):
+def analyze(path,out,threshold=THRESHOLD,min_rssi=None,filter_laa=False,method='complete',drop_mobile=False):
     scans,anchors=load(path)
+    if drop_mobile:
+        import anchors as aps
+        classes=aps.classify(scans,anchors)
+        scans=[dict(r,aps=[a for a in r['aps'] if classes.get(a['bssid'].upper(),{}).get('class')!='mobile']) for r in scans]
+        scans=[dict(r,result=len(r['aps'])) for r in scans]
     if min_rssi is not None or filter_laa:
         scans = filter_aps(scans, min_rssi=min_rssi, filter_laa=filter_laa)
     labels,score=cluster(scans,threshold=threshold,method=method);out=Path(out);out.mkdir(parents=True,exist_ok=True)
@@ -136,7 +141,7 @@ def analyze(path,out,threshold=THRESHOLD,min_rssi=None,filter_laa=False,method='
     predictions=predict(scans,labels,perturbed,threshold=threshold)
     eligible=[i for i,c in enumerate(labels) if c!=-1]
     unchanged=sum(predictions[i]['place']==labels[i] for i in eligible)
-    report=dict(source=Path(path).name,source_sha256=hashlib.sha256(Path(path).read_bytes()).hexdigest(),scans=len(scans),unique_bssids=len({a['bssid'] for r in scans for a in r['aps']}),sessions=len({r['session'] for r in scans}),scans_without_clock_anchor=sum(not anchors.get((r['device'],r['session'])) for r in scans),parameters=dict(threshold=threshold,linkage_method=method,min_rssi=min_rssi,filter_laa=filter_laa,minimum_shared=MIN_SHARED,minimum_networks=MIN_NETWORKS,minimum_cluster=MIN_CLUSTER,cosine_weight=.7,jaccard_weight=.3,anchor_weights='neutral: insufficient multi-day stability evidence'),candidate_places=groups,unassigned=int(sum(labels==-1)),threshold_sensitivity=sensitivity,leave_one_session_out=holdout,perturbation_test=dict(seed=20261029,rssi_noise_std_db=4,drop_probability=.15,evaluated=len(eligible),same_candidate_place=int(unchanged),rejected=int(sum(predictions[i]['place']==-1 for i in eligible)),different_candidate_place=int(sum(predictions[i]['place'] not in (-1,labels[i]) for i in eligible)),description='Synthetic perturbations of observed scans; not independent ground truth'),gps_accuracy_tested=False,physical_place_accuracy_tested=False)
+    report=dict(source=Path(path).name,source_sha256=hashlib.sha256(Path(path).read_bytes()).hexdigest(),scans=len(scans),unique_bssids=len({a['bssid'] for r in scans for a in r['aps']}),sessions=len({r['session'] for r in scans}),scans_without_clock_anchor=sum(not anchors.get((r['device'],r['session'])) for r in scans),parameters=dict(threshold=threshold,linkage_method=method,min_rssi=min_rssi,filter_laa=filter_laa,drop_mobile=drop_mobile,minimum_shared=MIN_SHARED,minimum_networks=MIN_NETWORKS,minimum_cluster=MIN_CLUSTER,cosine_weight=.7,jaccard_weight=.3,anchor_weights='neutral: insufficient multi-day stability evidence'),candidate_places=groups,unassigned=int(sum(labels==-1)),threshold_sensitivity=sensitivity,leave_one_session_out=holdout,perturbation_test=dict(seed=20261029,rssi_noise_std_db=4,drop_probability=.15,evaluated=len(eligible),same_candidate_place=int(unchanged),rejected=int(sum(predictions[i]['place']==-1 for i in eligible)),different_candidate_place=int(sum(predictions[i]['place'] not in (-1,labels[i]) for i in eligible)),description='Synthetic perturbations of observed scans; not independent ground truth'),gps_accuracy_tested=False,physical_place_accuracy_tested=False)
     (out/'analysis.json').write_text(json.dumps(report,indent=2)+'\n')
     (out/'similarity-matrix.json').write_text(json.dumps(score.round(5).tolist()))
     print(json.dumps(report,indent=2));return report
@@ -149,6 +154,7 @@ if __name__=='__main__':
     p.add_argument('--threshold',type=float,default=THRESHOLD)
     p.add_argument('--min-rssi',type=int,default=None,help="Ignore APs below this RSSI dBm (e.g. -82)")
     p.add_argument('--filter-laa',action='store_true',help="Filter randomized/mobile hotspot MACs")
+    p.add_argument('--drop-mobile',action='store_true',help="Drop access points classified as mobile by anchors.py")
     p.add_argument('--method',default='complete',choices=['complete','average','weighted','centroid'],help="Clustering linkage method")
     a=p.parse_args()
-    analyze(a.input,a.out,threshold=a.threshold,min_rssi=a.min_rssi,filter_laa=a.filter_laa,method=a.method)
+    analyze(a.input,a.out,threshold=a.threshold,min_rssi=a.min_rssi,filter_laa=a.filter_laa,method=a.method,drop_mobile=a.drop_mobile)
