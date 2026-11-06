@@ -226,6 +226,13 @@ Like a phone's Wi-Fi Positioning System, the router map should only contain rout
 
 Randomized MACs alone are **not** treated as mobile: printers (`DIRECT-…`), smart speakers and cameras use them but stay put. Faint far-away sightings are ignored for spread, because 2.4 GHz signals carry 300 m+ across open ground.
 
+**GPS drift rejection.** GPS can wander 100 m+ near buildings while the Wi-Fi around you doesn't change. `gps_outliers()` checks every fix against Wi-Fi consensus and only trusted fixes are used for the router map and for spread checks:
+
+1. **Look-alike scans:** scans sharing ≥ 40% of their networks were in the same area. A fix > 100 m from where look-alike scans put it has drifted.
+2. **Router map:** the scan's networks are positioned from *other* fixes; a fix > 100 m from where they place it has drifted.
+
+Drift is correlated over minutes (fixes taken together drift together), so witnesses must come from **another visit** (another session or ≥ 15 min apart), and each visit gets **one vote**. Rejected fixes stop voting and the check repeats. On real data this rejected 42 of 469 fixes (up to ~700 m off), stopped 12 fixed routers being mislabelled as mobile, and let 10% more scans be located at the same accuracy (median ≈ 24 m, holding out whole visits). A stricter 60 m limit rejected good fixes and was less accurate.
+
 **Doorway pinning.** Scans after `gps_lost` are pinned to `last_fix` (radius 40 m, weight 0.3 vs a real fix) while they still share ≥ 30% of their networks with the doorway scan; scans before `gps_regained` are pinned to the exit fix the same way. Lost→regained stretches under 60 s are building-edge flicker and ignored.
 
 **Also fixed in `geolocate.py`:** overlapping exports are de-duplicated (the same scan was counted once per export), stale GPS fixes (`age_ms` > 5 s) are never used as labels, and each router entry records its `class` and how many real GPS observations it has.

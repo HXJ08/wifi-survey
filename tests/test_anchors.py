@@ -100,6 +100,42 @@ class Classify(unittest.TestCase):
         self.assertEqual(m.fresh_gps(scan(1, [], gps=dict(lat=1, lon=2, hdop=1.0, age_ms=0))), (1.0, 2.0))
 
 
+def fix(dlat=0.0, dlon=0.0):
+    return dict(lat=BASE_LAT + dlat, lon=BASE_LON + dlon, hdop=1.2, age_ms=0)
+
+
+class Drift(unittest.TestCase):
+    # 0.0015 deg latitude ~ 167 m: far beyond the drift limits
+    def test_single_drifted_fix_is_rejected(self):
+        scans = [scan(1, place_aps(1), session=f'v{k}', gps=fix()) for k in range(4)]
+        scans.append(scan(1, place_aps(1), session='v9', gps=fix(0.0015)))
+        bad = m.gps_outliers(scans)
+        self.assertEqual(list(bad), [4])
+        self.assertIn('look-alike', bad[4])
+
+    def test_fixes_drifting_together_cannot_vouch_for_each_other(self):
+        good = [scan(1, place_aps(1), session=f'v{k}', gps=fix()) for k in range(3)]
+        drifted = [scan(i, place_aps(1), session='walk', gps=fix(0.0015)) for i in range(3)]  # 1 min apart
+        bad = m.gps_outliers(good + drifted)
+        self.assertEqual(sorted(bad), [3, 4, 5])
+
+    def test_honest_walk_is_kept(self):
+        # Each spot has its own networks plus some shared with the next spot, like a street.
+        scans = []
+        for k in range(6):
+            aps_k = place_aps(k, 6) + place_aps(k + 1, 3)
+            for v in range(2):
+                scans.append(scan(k, aps_k, session=f'v{v}', gps=fix(0.0007 * k)))  # ~80 m apart
+        self.assertEqual(m.gps_outliers(scans), {})
+
+    def test_drift_does_not_make_a_fixed_router_mobile(self):
+        router = ap('00:ff:00:00:00:01', -55)
+        scans = [scan(1, place_aps(1) + [router], session=f'v{k}', gps=fix()) for k in range(4)]
+        scans.append(scan(1, place_aps(1) + [router], session='v9', gps=fix(0.004)))  # ~450 m off
+        info = m.classify(scans)['00:FF:00:00:00:01']
+        self.assertEqual(info['class'], 'anchor')
+
+
 class Doorway(unittest.TestCase):
     def events(self, lost_ms, regained_ms):
         fix = dict(lat=BASE_LAT, lon=BASE_LON, age_ms=20000)

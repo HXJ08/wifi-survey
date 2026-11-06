@@ -41,6 +41,13 @@ MIN_INDOOR_MS = 60000         # lost->regained shorter than this is edge flicker
 DOORWAY_MATCH_JACCARD = 0.3   # keep pinning while scans still share this much with the doorway scan
 DOORWAY_RADIUS_M = 40.0       # uncertainty of a doorway-pinned scan
 DOORWAY_WEIGHT = 0.3          # training weight vs a real GPS fix (1.0)
+# GPS drift rejection (see gps_outliers)
+FP_MIN_RSSI = -85             # networks used to compare scans
+INDEPENDENT_MS = 15 * 60000   # witnesses must be from another session or >= 15 min apart
+LOOKALIKE_JACCARD = 0.4       # scans sharing this much of their networks were in the same area
+LOOKALIKE_MAX_M = 100.0       # a fix further than this from its look-alikes has drifted (60 m rejected good fixes)
+MAP_MAX_M = 100.0             # a fix further than this from where its networks place it has drifted
+MIN_WITNESSES = 2             # look-alikes / mapped networks needed before judging a fix
 
 HOTSPOT_SSID = re.compile(
     r"\b(iphone|ipad|android|galaxy|pixel|oneplus|redmi|xiaomi|huawei|hotspot|mifi|jetpack|moto)\b"
@@ -200,16 +207,116 @@ def _pin(scans, ordered, where, labels):
         labels.setdefault(i, (where[0], where[1], DOORWAY_RADIUS_M, DOORWAY_WEIGHT))
 
 
+# ---------- GPS drift rejection (Wi-Fi consensus) ----------
+
+def _fingerprint(scan):
+    """Networks that identify a place: strong enough, not randomized, not hotspot-named."""
+    return {a["bssid"].upper() for a in scan["aps"]
+            if a["rssi_dbm"] >= FP_MIN_RSSI and not is_laa(a["bssid"]) and not HOTSPOT_SSID.search(ssid_of(a))}
+
+
+def _independent(si, sj, ti, tj):
+    """Drift is correlated over minutes, so only fixes from another visit can vouch for a fix."""
+    if si.get("session") != sj.get("session") or si.get("device") != sj.get("device"):
+        return True
+    if ti is not None and tj is not None:
+        return abs(ti - tj) >= INDEPENDENT_MS
+    return abs(si["start_ms"] - sj["start_ms"]) >= INDEPENDENT_MS
+
+
+def gps_outliers(scans, anchors=None, rounds=3):
+    """Find drifted GPS fixes. Returns {scan_index: reason}.
+
+    Two Wi-Fi checks vote, using only fixes from *other visits* as witnesses:
+      1. look-alike scans: scans that share >= LOOKALIKE_JACCARD of their networks were taken
+         in roughly the same place; a fix far from where they put it has drifted.
+      2. router map: each network's position is estimated from the other visits' fixes; a fix
+         far from where those networks place the scan has drifted.
+    Repeated so that fixes already rejected stop voting.
+    """
+    anchors = anchors or {}
+    idx = [i for i, s in enumerate(scans) if fresh_gps(s)]
+    pos = {i: fresh_gps(scans[i]) for i in idx}
+    fp = {i: _fingerprint(scans[i]) for i in idx}
+    t = {i: scan_time(scans[i], anchors) for i in idx}
+    rssi = {i: {a["bssid"].upper(): a["rssi_dbm"] for a in scans[i]["aps"]} for i in idx}
+    # A visit = one session within one 15-min window; its fixes share drift, so it gets one vote.
+    visit = {i: (scans[i].get("device"), scans[i].get("session"),
+                 int((t[i] if t[i] is not None else scans[i]["start_ms"]) // INDEPENDENT_MS)) for i in idx}
+    bad = {}
+    for _ in range(rounds):
+        good = [i for i in idx if i not in bad]
+        size = defaultdict(int)
+        for j in good:
+            size[visit[j]] += 1
+        new = {}
+        for i in good:
+            witnesses = [j for j in good if j != i and _independent(scans[i], scans[j], t[i], t[j])]
+            # 1. look-alike scans, one vote per visit
+            votes = defaultdict(list)
+            for j in witnesses:
+                w = jaccard(fp[i], fp[j])
+                if w >= LOOKALIKE_JACCARD:
+                    votes[visit[j]].append((pos[j], w))
+            if len(votes) >= MIN_WITNESSES:
+                vl = [(median([p[0] for p, _ in v]), median([p[1] for p, _ in v]), max(w for _, w in v))
+                      for v in votes.values()]
+                lat = _wmedian([x[0] for x in vl], [x[2] for x in vl])
+                lon = _wmedian([x[1] for x in vl], [x[2] for x in vl])
+                d = haversine_m(pos[i][0], pos[i][1], lat, lon)
+                if d > LOOKALIKE_MAX_M:
+                    new[i] = f"{d:.0f} m from look-alike scans in {len(votes)} other visits"
+                    continue
+            # 2. router map built from other visits only (each visit weighted as one)
+            sums = defaultdict(lambda: [0.0, 0.0, 0.0])
+            for j in witnesses:
+                for b in fp[j] & fp[i]:
+                    w = 10.0 ** ((rssi[j][b] + 100.0) / 20.0) / size[visit[j]]
+                    s = sums[b]; s[0] += w; s[1] += w * pos[j][0]; s[2] += w * pos[j][1]
+            if len(sums) >= MIN_WITNESSES:
+                tw = la = lo = 0.0
+                for b, (w, wl, wo) in sums.items():
+                    k = 10.0 ** ((rssi[i][b] + 100.0) / 20.0)
+                    tw += k; la += k * wl / w; lo += k * wo / w
+                d = haversine_m(pos[i][0], pos[i][1], la / tw, lo / tw)
+                if d > MAP_MAX_M:
+                    new[i] = f"{d:.0f} m from where {len(sums)} mapped networks place it"
+        if not new:
+            break
+        bad.update(new)
+    return bad
+
+
+def _wmedian(xs, ws):
+    pairs = sorted(zip(xs, ws)); half = sum(ws) / 2; acc = 0.0
+    for x, w in pairs:
+        acc += w
+        if acc >= half:
+            return x
+    return pairs[-1][0]
+
+
+def trusted_gps(scans, anchors=None):
+    """{scan_index: (lat, lon)} for fresh, good-quality fixes that passed the drift check."""
+    bad = gps_outliers(scans, anchors)
+    return {i: fresh_gps(s) for i, s in enumerate(scans) if fresh_gps(s) and i not in bad}
+
+
 # ---------- classification ----------
 
-def classify(scans, anchors=None, events=None, seed=20261031):
-    """Classify every BSSID. Returns {bssid: {"class", "reasons", ...stats}}."""
+def classify(scans, anchors=None, events=None, seed=20261031, trusted=None):
+    """Classify every BSSID. Returns {bssid: {"class", "reasons", ...stats}}.
+
+    trusted: output of trusted_gps(); computed here if not given, so drifted fixes never
+    make a fixed router look like it moved.
+    """
     anchors = anchors or {}
     rng = random.Random(seed)
+    trusted = trusted_gps(scans, anchors) if trusted is None else trusted
     sightings = defaultdict(list)  # bssid -> [(time, neighbour set, position or None, ssid)]
     for i, s in enumerate(scans):
         bssids = {a["bssid"].upper() for a in s["aps"] if not is_laa(a["bssid"])}
-        pos = fresh_gps(s)
+        pos = trusted.get(i)
         t = scan_time(s, anchors)
         for a in s["aps"]:
             b = a["bssid"].upper()
@@ -309,12 +416,17 @@ def main():
     p.add_argument("--out", default="analysis/ap-classes.json", help="Where to write the per-AP report")
     a = p.parse_args()
     scans, anchors, events = split_records(load_records(a.inputs))
-    classes = classify(scans, anchors, events)
+    drift = gps_outliers(scans, anchors)
+    trusted = {i: fresh_gps(s) for i, s in enumerate(scans) if fresh_gps(s) and i not in drift}
+    classes = classify(scans, anchors, events, trusted=trusted)
     pinned = doorway_labels(scans, events)
     out = Path(a.out); out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(classes, indent=2, sort_keys=True) + "\n")
     print(f"{len(scans)} unique scans, {len(classes)} access points: {summary(classes)}")
-    print(f"GPS-labelled scans: {sum(1 for s in scans if fresh_gps(s))}, doorway-pinned scans: {len(pinned)}")
+    print(f"GPS-labelled scans: {len(trusted) + len(drift)} ({len(drift)} rejected as drift), "
+          f"doorway-pinned scans: {len(pinned)}")
+    for i, why in sorted(drift.items()):
+        print(f"  drift: scan {scans[i].get('session', '')[:6]}/{scans[i].get('scan_id')}: {why}")
     mobile = sorted(((v['sightings'], b, v) for b, v in classes.items() if v['class'] == 'mobile'), reverse=True)[:10]
     for n, b, v in mobile:
         print(f"  mobile {b} '{v['ssid']}' x{n}: {'; '.join(v['reasons'])}")

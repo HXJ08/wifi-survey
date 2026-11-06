@@ -90,13 +90,14 @@ def load_scans(path, min_rssi=-82, filter_laa=True):
     return scans, anchors
 
 
-def train_router_map(scans, anchors=None, manual_tags=None, classes=None, doorway=None):
+def train_router_map(scans, anchors=None, manual_tags=None, classes=None, doorway=None, trusted=None):
     """
     Learns physical (lat, lon) coordinates for every fixed Wi-Fi router
     using signal-weighted multilateration from GPS-tagged or anchored scans.
 
     classes: output of anchors.classify(); mobile APs are skipped and moved APs only use
              sightings after they moved. doorway: anchors.doorway_labels() weak labels.
+    trusted: anchors.trusted_gps() fixes that passed the drift check (default: every fresh fix).
     """
     manual_tags = manual_tags or {}
     classes = classes or {}
@@ -106,8 +107,8 @@ def train_router_map(scans, anchors=None, manual_tags=None, classes=None, doorwa
 
     for i, s in enumerate(scans):
         coords, label_w = None, 1.0
-        # 1. Fresh, good GPS fix recorded by the ESP32 (stale indoor fixes are rejected)
-        coords = aps.fresh_gps(s)
+        # 1. Fresh, good GPS fix recorded by the ESP32 that Wi-Fi consensus agrees with
+        coords = trusted.get(i) if trusted is not None else aps.fresh_gps(s)
 
         # 2. Manual session or scan anchor tag
         if coords is None:
@@ -272,7 +273,9 @@ def main():
     if args.command == "train":
         # One de-duplicated record set across all inputs (exports overlap when the board isn't cleared)
         raw_scans, clock, events = aps.split_records(aps.load_records(args.inputs))
-        classes = {} if args.keep_mobile else aps.classify(raw_scans, clock, events)
+        drift = aps.gps_outliers(raw_scans, clock)
+        trusted = {i: aps.fresh_gps(s) for i, s in enumerate(raw_scans) if aps.fresh_gps(s) and i not in drift}
+        classes = {} if args.keep_mobile else aps.classify(raw_scans, clock, events, trusted=trusted)
         all_scans = [clean_scan(s) for s in raw_scans]
         # Pin on the full scans: dropping weak networks first would make every scan look unlike the doorway
         doorway = {} if args.no_doorway else aps.doorway_labels(raw_scans, events)
@@ -294,14 +297,14 @@ def main():
         out_dir.mkdir(parents=True, exist_ok=True)
 
         router_map = train_router_map(all_scans, anchors=clock, manual_tags=manual_tags,
-                                      classes=classes, doorway=doorway)
+                                      classes=classes, doorway=doorway, trusted=trusted)
         map_path = out_dir / "router_map.json"
         map_path.write_text(json.dumps(router_map, indent=2))
         if classes:
             (out_dir / "ap_classes.json").write_text(json.dumps(classes, indent=2, sort_keys=True))
 
         print(f"Loaded {len(all_scans)} unique scans across input files.")
-        print(f"GPS-labelled scans: {sum(1 for s in all_scans if aps.fresh_gps(s))}; doorway-pinned scans: {len(doorway)}")
+        print(f"GPS-labelled scans: {len(trusted)} trusted, {len(drift)} rejected as drift; doorway-pinned scans: {len(doorway)}")
         if classes:
             print(f"Access points: {aps.summary(classes)} (mobile ones are excluded from the map)")
         print(f"Successfully mapped {len(router_map)} unique fixed routers.")
